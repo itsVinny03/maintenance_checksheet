@@ -40,29 +40,13 @@ class ApiService {
   }
 
   Future<T> _makeParallelRequest<T>(Future<_ApiResult<T>> Function(String apiUrl) requestFn) async {
-    if (_lastWorkingServerIndex != null) {
-      try {
-        return (await requestFn(apiUrls[_lastWorkingServerIndex!]).timeout(requestTimeout)).value;
-      } catch (_) {
-        // fallback to parallel below
-      }
-    }
-
-    final List<Future<_ApiResult<T>?>> futures = apiUrls.map((apiUrl) async {
+    for (final apiUrl in apiUrls) {
       try {
         final result = await requestFn(apiUrl).timeout(requestTimeout);
-        return result;
-      } catch (e) {
-        return null;
-      }
-    }).toList();
-
-    final results = await Future.wait(futures);
-
-    for (final result in results) {
-      if (result != null) {
         _lastWorkingServerIndex = apiUrls.indexOf(result.apiUrlUsed);
         return result.value;
+      } catch (_) {
+        // Try next URL in order.
       }
     }
 
