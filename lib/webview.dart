@@ -345,22 +345,30 @@ class _SoftwareWebViewScreenState extends State<SoftwareWebViewScreen> with Widg
       return true;
     }
   }
+
   bool _isPdfUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return false;
 
-    if (url.toLowerCase().endsWith('.pdf')) {
-      return true;
+    // Only treat as PDF if the path literally ends with ".pdf"
+    final path = uri.path.toLowerCase();
+    return path.endsWith('.pdf');
+  }
+  bool _isWebPage(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+
+    final path = uri.path.toLowerCase();
+
+    // Explicit server-side script extensions → always load in WebView
+    const webExtensions = ['.php', '.asp', '.aspx', '.jsp', '.html', '.htm', '.cfm'];
+    for (final ext in webExtensions) {
+      if (path.endsWith(ext)) return true;
     }
 
-    final mimeType = lookupMimeType(url);
-    if (mimeType == 'application/pdf') {
-      return true;
-    }
-
-    if (uri.pathSegments.last.toLowerCase().contains('pdf')) {
-      return true;
-    }
+    // No extension in path → likely a route/endpoint → load in WebView
+    final lastSegment = path.split('/').last;
+    if (!lastSegment.contains('.')) return true;
 
     return false;
   }
@@ -421,7 +429,14 @@ class _SoftwareWebViewScreenState extends State<SoftwareWebViewScreen> with Widg
     _isDownloadDialogShowing = true;
 
     final uri = Uri.parse(url);
+    // Build a clean, human-readable filename from the URL path only
     String fileName = uri.pathSegments.last;
+
+    // Strip query parameters from the displayed filename
+    // (uri.pathSegments.last already excludes query, but double-check)
+    if (fileName.contains('?')) {
+      fileName = fileName.split('?').first;
+    }
 
     if (fileName.isEmpty || fileName.length > 50) {
       fileName = isPdf
@@ -538,8 +553,10 @@ class _SoftwareWebViewScreenState extends State<SoftwareWebViewScreen> with Widg
     });
   }
 
-  // Function to check if a URL is a download link
   bool _isDownloadableUrl(String url) {
+    // If it's a web page (PHP, HTML, etc.) → never a download
+    if (_isWebPage(url)) return false;
+
     final mimeType = lookupMimeType(url);
     if (mimeType == null) return false;
 
@@ -554,7 +571,8 @@ class _SoftwareWebViewScreenState extends State<SoftwareWebViewScreen> with Widg
       'txt', 'csv', 'json', 'xml'
     ];
 
-    return downloadableExtensions.any((ext) => url.toLowerCase().contains('.$ext'));
+    final uriPath = Uri.tryParse(url)?.path.toLowerCase() ?? '';
+    return downloadableExtensions.any((ext) => uriPath.endsWith('.$ext'));
   }
 
   Future<void> _showInputMethodPicker() async {
@@ -1403,13 +1421,20 @@ class _SoftwareWebViewScreenState extends State<SoftwareWebViewScreen> with Widg
                   },
                   shouldOverrideUrlLoading: (controller, navigationAction) async {
                     final url = navigationAction.request.url?.toString() ?? '';
-                    final isPdf = _isPdfUrl(url);
-                    if (_isDownloadableUrl(url)) {
-                      await _launchInBrowser(url);
+
+                    if (_isWebPage(url)) {
+                      _debounceNavigation(url);
                       return NavigationActionPolicy.CANCEL;
                     }
-                    if (isPdf || lookupMimeType(url) != null) {
-                      _showDownloadDialog(url, isPdf);
+
+                    final isPdf = _isPdfUrl(url);
+                    if (isPdf) {
+                      _showDownloadDialog(url, true);
+                      return NavigationActionPolicy.CANCEL;
+                    }
+
+                    if (_isDownloadableUrl(url)) {
+                      await _launchInBrowser(url);
                       return NavigationActionPolicy.CANCEL;
                     }
 
@@ -1418,6 +1443,11 @@ class _SoftwareWebViewScreenState extends State<SoftwareWebViewScreen> with Widg
                   },
                   onDownloadStartRequest: (controller, downloadStartRequest) async {
                     final url = downloadStartRequest.url.toString();
+                    if (_isWebPage(url)) {
+                      await controller.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
+                      return;
+                    }
+
                     final isPdf = _isPdfUrl(url);
                     _showDownloadDialog(url, isPdf);
                   },
